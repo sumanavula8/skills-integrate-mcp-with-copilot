@@ -8,16 +8,39 @@ for extracurricular activities at Mergington High School.
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 import os
+import json
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teachers from teachers.json
+def load_teachers():
+    try:
+        with open(os.path.join(Path(__file__).parent, "teachers.json"), "r") as f:
+            data = json.load(f)
+            return {t["username"]: t["password"] for t in data.get("teachers", [])}
+    except Exception as e:
+        print(f"Error loading teachers: {e}")
+        return {}
+
+teachers = load_teachers()
 
 # In-memory activity database
 activities = {
@@ -83,26 +106,42 @@ def root():
     return RedirectResponse(url="/static/index.html")
 
 
+@app.post("/login")
+def login(username: str, password: str):
+    """Authenticate a teacher and return success/failure"""
+    if username in teachers and teachers[username] == password:
+        return {"success": True, "message": f"Welcome, {username}!"}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+
 @app.get("/activities")
 def get_activities():
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
-    # Validate activity exists
+def signup_for_activity(activity_name: str, email: str, teacher: str = None):
+    """Sign up a student for an activity (teacher authorization optional)"""
+    # Verify activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
 
     # Get the specific activity
     activity = activities[activity_name]
 
-    # Validate student is not already signed up
+    # Check if student is already signed up
     if email in activity["participants"]:
         raise HTTPException(
             status_code=400,
             detail="Student is already signed up"
+        )
+
+    # Check if adding would exceed capacity
+    if len(activity["participants"]) >= activity["max_participants"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Activity is full"
         )
 
     # Add student
@@ -111,8 +150,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher: str = None, password: str = None):
+    """Unregister a student from an activity (teacher authorization required)"""
+    # Require teacher authentication for unregister
+    if not teacher or teacher not in teachers or teachers[teacher] != password:
+        raise HTTPException(status_code=401, detail="Teacher authentication required to remove students")
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
